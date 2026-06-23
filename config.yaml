@@ -1,0 +1,30 @@
+server:
+  port: 8080
+  trusted_proxies: 1
+
+clickhouse:
+  host: 192.168.5.119
+  port: 9000
+  database: testlink
+  username: testlink
+  password: "testlink123"
+
+redis:
+  host: 192.168.5.119
+  port: 6379
+  password: ""
+
+auth:
+  jwt_secret: "testlink123!"
+  admin_token: "testlink123!"
+
+geoip:
+  ip2region_v4: "ip2region_v4.xdb"
+  ip2region_v6: "ip2region_v6.xdb"
+  maxmind_country: "GeoLite2-Country.mmdb"
+  maxmind_asn: "GeoLite2-ASN.mmdb"
+
+ratelimit:
+  session_per_ip_per_min: 5
+  report_per_ip_per_min: 60
+  global_session_per_sec: 100

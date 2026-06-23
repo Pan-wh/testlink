@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>网络诊断工具</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;padding:0;font-family:'PingFang SC','Microsoft Yahei',Arial,sans-serif;background:#f4f8fb;}
+h2{text-align:center;font-size:1.25rem;margin:0.8rem 0 0.2rem;color:#0862d4;}
+.session-bar{text-align:center;font-size:1.05rem;color:#555;margin-bottom:0.3rem;}
+.session-bar .sid{font-weight:bold;font-size:1.2rem;color:#333;letter-spacing:0.05em;}
+.geo-bar{text-align:center;font-size:0.92rem;color:#666;margin-bottom:0.3rem;}
+.tags{text-align:center;font-size:0.85rem;color:#888;margin-bottom:0.6rem;min-height:1.2em;}
+.status-tip{text-align:center;color:#2196f3;font-size:1rem;margin-bottom:0.8rem;min-height:1.5em;}
+.table-scroll-x{overflow-x:auto;margin:0 auto;max-width:100vw;}
+table{border-collapse:collapse;width:820px;min-width:520px;background:#fff;box-shadow:0 0 12px rgba(80,120,160,0.09);margin:0 auto 0.5rem;font-size:1.04rem;}
+th,td{border:1px solid #e1e8ef;padding:0.57em 0.4em;text-align:center;word-break:break-all;}
+th{background:#e3f3fd;font-size:0.92rem;}
+th:first-child,td:first-child{font-weight:bold;}
+.ok{color:#4caf50;}.fail{color:#d32f2f;}.timeout{color:#f29502;font-weight:bold;}
+td.status.timeout{background:#ffeccc;}td.status.fail{background:#fee;}
+tr:hover{background:#f0f8ff;}.loading-cell{color:#aaa;font-style:italic;}
+.verdict-bar{text-align:center;padding:0.5rem;margin:0 auto 10vw;max-width:820px;border-radius:6px;font-weight:bold;font-size:1rem;}
+.verdict-all-ok{background:#e8f5e9;color:#2e7d32}
+.verdict-warn{background:#fff3e0;color:#e65100}
+.verdict-fail{background:#ffebee;color:#c62828}
+.verdict-info{background:#e3f2fd;color:#1565c0}
+@media(max-width:900px){table{width:99vw;min-width:420px;font-size:0.95rem;}th,td{padding:0.45em 0.2em;}}
+@media(max-width:600px){table{min-width:340px;font-size:0.85rem;}th,td{font-size:0.85em;padding:0.35em 0.08em;}.session-bar{font-size:0.92rem;}.session-bar .sid{font-size:1.05rem;}}
+</style>
+</head>
+<body>
+<h2 id="t-title">网络诊断工具</h2>
+<div class="session-bar"><span id="t-session-label">测试编号</span>：<span class="sid" id="sessionId">-</span></div>
+<div class="geo-bar" id="geoInfo"></div>
+<div class="tags" id="tags"></div>
+<div class="status-tip" id="pageStatus"></div>
+<div class="table-scroll-x">
+  <table id="result">
+    <thead><tr>
+      <th id="t-col-group">分组</th><th id="t-col-node">节点</th><th id="t-col-ip">IP/归属地</th>
+      <th id="t-col-status">状态</th><th id="t-col-latency">延迟(ms)</th><th id="t-col-cold">冷连(ms)</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+<div class="verdict-bar verdict-info" id="verdictBar">-</div>
+
+<script>
+// ════════════════════════ i18n ════════════════════════
+var L = {}, lang = (navigator.language || 'zh-CN').split('-')[0];
+var MSG = {
+  'zh': {
+    title:'网络诊断工具', 'session-label':'测试编号', 'col-group':'分组', 'col-node':'节点', 'col-ip':'IP/归属地',
+    'col-status':'状态', 'col-latency':'延迟(ms)', 'col-cold':'冷连(ms)',
+    connecting:'连接服务中...', 'server-error':'服务错误: ', 'no-targets':'暂无探测目标',
+    testing:'正在测试所有节点...', analyzing:'分析中...',
+    success:'成功', timeout:'超时', failed:'失败', 'http-err':'HTTP ',
+    verdict: {
+      ALL_OK:'网络层正常，进不去大概率非网络问题',
+      PARTIAL_FAIL:'部分模块异常: ',
+      OUR_API_DOWN:'我方 API 全部不可达，疑似服务端或 IDC 路由故障',
+      PLAYER_NET_DOWN:'玩家自身网络异常，无法访问外网',      INCONCLUSIVE:'数据不足，无法判定'
+    },
+    game:'游戏', server:'区服', ticket:'工单',
+    'analyzing-failed':'分析失败，请查看表格自行判断',
+    'detail-label':'详细', 'collapse-label':'收起'
+  },
+  'en': {
+    title:'Network Diagnostics', 'session-label':'Session ID', 'col-group':'Group', 'col-node':'Target', 'col-ip':'IP/Location',
+    'col-status':'Status', 'col-latency':'Latency(ms)', 'col-cold':'Cold(ms)',
+    connecting:'Connecting...', 'server-error':'Server error: ', 'no-targets':'No targets configured',
+    testing:'Testing all targets...', analyzing:'Analyzing...',
+    success:'OK', timeout:'Timeout', failed:'Failed', 'http-err':'HTTP ',
+    verdict: {
+      ALL_OK:'Network is normal. Issue likely not network-related.',
+      PARTIAL_FAIL:'Partial failure: ',
+      OUR_API_DOWN:'All APIs unreachable. Possible server/IDC route failure.',
+      PLAYER_NET_DOWN:'Player network is down. Cannot reach internet.',      INCONCLUSIVE:'Insufficient data, unable to determine.'
+    },
+    game:'Game', server:'Server', ticket:'Ticket',
+    'analyzing-failed':'Analysis failed. Please check the table manually.',
+    'detail-label':'Detail', 'collapse-label':'Collapse'
+  },
+  'vi': {
+    title:'Chẩn đoán mạng', 'session-label':'Mã kiểm tra', 'col-group':'Nhóm', 'col-node':'Mục tiêu', 'col-ip':'IP/Vị trí',
+    'col-status':'Trạng thái', 'col-latency':'Độ trễ(ms)', 'col-cold':'Lạnh(ms)',
+    connecting:'Đang kết nối...', 'server-error':'Lỗi máy chủ: ', 'no-targets':'Không có mục tiêu',
+    testing:'Đang kiểm tra...', analyzing:'Đang phân tích...',
+    success:'OK', timeout:'Hết giờ', failed:'Lỗi', 'http-err':'HTTP ',
+    verdict: {
+      ALL_OK:'Mạng bình thường. Sự cố có thể không liên quan đến mạng.',
+      PARTIAL_FAIL:'Lỗi một phần: ',
+      OUR_API_DOWN:'Tất cả API không thể truy cập. Có thể lỗi máy chủ/IDC.',
+      PLAYER_NET_DOWN:'Mạng của bạn đang gặp sự cố. Không thể truy cập internet.',      INCONCLUSIVE:'Không đủ dữ liệu để xác định.'
+    },
+    game:'Game', server:'Máy chủ', ticket:'Ticket',
+    'analyzing-failed':'Phân tích thất bại. Vui lòng kiểm tra bảng thủ công.',
+    'detail-label':'Chi tiết', 'collapse-label':'Thu gọn'
+  }
+};
+// Traditional Chinese (zh-Hant) falls back to zh + overrides
+MSG['zh-Hant'] = Object.assign({}, MSG['zh'], {
+  title:'網絡診斷工具', 'session-label':'測試編號', 'col-group':'分組', 'col-node':'節點', 'col-ip':'IP/歸屬地',
+  'col-status':'狀態', 'col-latency':'延遲(ms)', 'col-cold':'冷連(ms)',
+  connecting:'連接服務中...', 'server-error':'服務錯誤: ', 'no-targets':'暫無探測目標',
+  testing:'正在測試所有節點...', analyzing:'分析中...',
+  success:'成功', timeout:'超時', failed:'失敗', 'http-err':'HTTP ',
+  verdict: {
+    ALL_OK:'網絡層正常，進不去大概率非網絡問題',
+    PARTIAL_FAIL:'部分模塊異常: ',
+    OUR_API_DOWN:'我方 API 全部不可達，疑似服務端或 IDC 路由故障',
+    PLAYER_NET_DOWN:'玩家自身網絡異常，無法訪問外網',    INCONCLUSIVE:'數據不足，無法判定'
+  },
+  game:'遊戲', server:'區服', ticket:'工單',
+  'analyzing-failed':'分析失敗，請查看表格自行判斷',
+  'detail-label':'詳細', 'collapse-label':'收起'
+});
+
+function T(key) {
+  var langFull = navigator.language || 'zh-CN';
+  // Map browser locale to our MSG keys
+  var map = {'zh-TW':'zh-Hant','zh-HK':'zh-Hant','zh-MO':'zh-Hant','zh-SG':'zh','zh-Hans':'zh','zh-CN':'zh'};
+  var use = map[langFull] || langFull;
+  if (MSG[use] && MSG[use][key]) return MSG[use][key];
+  var base = use.split('-')[0];
+  if (MSG[base] && MSG[base][key]) return MSG[base][key];
+  if (MSG['en'] && MSG['en'][key]) return MSG['en'][key];
+  return key;
+}
+function TV(code) { return (T('verdict')[code]) || code; }
+
+// Apply i18n to static elements
+function applyI18n() {
+  var ids = ['title','session-label','col-group','col-node','col-ip','col-status','col-latency','col-cold'];
+  ids.forEach(function(k) { var el = document.getElementById('t-'+k); if (el) el.textContent = T(k); });
+  document.title = T('title');
+}
+console.log('[i18n] browser lang:', navigator.language, '→ resolved:', T('title'));
+applyI18n();
+
+// ════════════════════════ Core ════════════════════════
+var BASE = '';
+var session = null, targets = [], playerIP = '', playerGeo = '';
+
+window.addEventListener('DOMContentLoaded', start);
+
+async function start() {
+  var params = new URLSearchParams(location.search);
+  var query = params.toString() ? '?' + params.toString() : '';
+
+  var resp;
+  try { resp = await fetch(BASE + '/api/session' + query); } catch(e) {
+    document.getElementById('pageStatus').textContent = T('connecting'); return;
+  }
+  if (!resp.ok) {
+    var err = await resp.json().catch(function(){return {};});
+    document.getElementById('pageStatus').textContent = T('server-error') + (err.error || resp.status); return;
+  }
+  var data = await resp.json();
+  session = data.session_id; targets = data.targets;
+
+  document.getElementById('sessionId').textContent = session;
+  var p = data.player;
+  document.getElementById('geoInfo').textContent =
+    p.ip + '  ' + [p.country, p.province, p.city].filter(Boolean).join(' ') + '  ' + (p.isp || '');
+  playerIP = p.ip;
+  playerGeo = [p.country, p.province, p.city].filter(Boolean).join(' ') + (p.isp ? ' ' + p.isp : '');
+
+  var tagParts = [];
+  if (params.get('g')) tagParts.push(T('game') + ': ' + params.get('g'));
+  if (params.get('s')) tagParts.push(T('server') + ': ' + params.get('s'));
+  if (params.get('t')) tagParts.push(T('ticket') + ': ' + params.get('t'));
+  document.getElementById('tags').textContent = tagParts.join('  ·  ');
+
+  var tbody = document.querySelector('#result tbody');
+  targets.forEach(function(t) {
+    var tr = document.createElement('tr'); tr.id = 'row-' + t.id;
+    tr.innerHTML = '<td>' + esc(t.group_name) + '</td><td style="font-size:0.92em">' + esc(t.name) + '</td>' +
+      '<td class="loading-cell" id="ip-' + t.id + '">-</td>' +
+      '<td class="loading-cell" id="status-' + t.id + '">-</td>' +
+      '<td class="loading-cell" id="latency-' + t.id + '">-</td>' +
+      '<td class="loading-cell" id="cold-' + t.id + '">-</td>';
+    tbody.appendChild(tr);
+  });
+
+  document.getElementById('pageStatus').textContent = T('testing');
+  await Promise.all(targets.map(function(t) { return testTarget(t); }));
+
+  document.getElementById('pageStatus').textContent = T('analyzing');
+  try {
+    var fr = await fetch(BASE + '/api/report?final=true', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({session_id:session, net_type:nc('effectiveType'), net_downlink:String(nc('downlink')||''), results:[]}) });
+    if (fr.ok) { var v = await fr.json(); showVerdict(v.verdict, v.verdict_detail); }
+    else showVerdict('INCONCLUSIVE', T('analyzing-failed'));
+  } catch(e) { showVerdict('INCONCLUSIVE', T('analyzing-failed')); }
+  document.getElementById('pageStatus').textContent = '';
+}
+
+function showVerdict(code, detail) {
+  var bar = document.getElementById('verdictBar');
+  bar.textContent = detail || TV(code);
+  bar.className = 'verdict-bar ' + (
+    code === 'ALL_OK' ? 'verdict-all-ok' :
+    code === 'PARTIAL_FAIL' || code === 'PLAYER_CROSSBORDER_BLOCKED' || code === 'DOMESTIC_BASELINE_FAIL' ? 'verdict-warn' :
+    code === 'OUR_API_DOWN' || code === 'PLAYER_NET_DOWN' ? 'verdict-fail' : 'verdict-info');
+}
+
+async function testTarget(t) {
+  var outcomes = [];
+  var coldMS = null, bestIP = '', bestGeo = '';
+
+  for (var i = 0; i < t.repeat_count; i++) {
+    var t0 = performance.now();
+    var ctrl = new AbortController();
+    var timer = setTimeout(function() { ctrl.abort(); }, t.timeout_ms);
+    var outcome = 'fast_fail', total = 0, httpStatus = null, errMsg = '';
+    var dns = null, tcp = null, tls = null, ttfb = null;
+    var respHeaders = '', respBody = '';
+
+    try {
+      var fetchOpts = { method: t.method, signal: ctrl.signal };
+      if (t.mode === 'no-cors') fetchOpts.mode = 'no-cors';
+      var url = t.cache_bust ? t.url + (t.url.indexOf('?')>=0 ? '&_t=' : '?_t=') + Math.random().toString(36).slice(2) : t.url;
+      var res = await fetch(url, fetchOpts);
+      total = Math.round(performance.now() - t0);
+      clearTimeout(timer);
+
+      if (t.mode === 'cors') {
+        httpStatus = res.status;
+        outcome = res.ok ? 'reachable' : 'http_error';
+        var hdrs = {};
+        res.headers.forEach(function(v, k) { hdrs[k] = v; });
+        respHeaders = JSON.stringify(hdrs);
+        try {
+          var raw = await res.text();
+          respBody = raw.length > 8000 ? raw.slice(0, 8000) : raw;
+          var data = null;
+          try { data = JSON.parse(raw); } catch(e) { if (!bestIP) bestIP = raw.trim(); }
+          if (data && typeof data === 'object') {
+            if (t.extract_rule) {
+              try {
+                var rule = JSON.parse(t.extract_rule);
+                var ip = fv(data, rule.ip);
+                var g = [fv(data, rule.country), fv(data, rule.province), fv(data, rule.city), fv(data, rule.isp)].filter(Boolean).join(' ');
+                if (ip && !bestIP) bestIP = ip;
+                if (g && !bestGeo) bestGeo = g;
+              } catch(e) {}
+            }
+            if (!bestIP) bestIP = data.ip || data.IP || data.client_ip || data.query || '';
+            if (!bestGeo) bestGeo = [data.country, data.region || data.province || data.subdivision, data.city, data.isp || data.org || data.organization].filter(Boolean).join(' ');
+          }
+        } catch(e) {}
+      } else {
+        outcome = 'reachable';
+        if (!bestIP) bestIP = playerIP;
+        if (!bestGeo) bestGeo = playerGeo;
+      }
+    } catch(e) {
+      total = Math.round(performance.now() - t0);
+      clearTimeout(timer);
+      if (e.name === 'AbortError') { outcome = 'timeout'; errMsg = 'timeout'; }
+      else { outcome = 'fast_fail'; errMsg = e.message || 'network error'; }
+    }
+
+    var allRes = performance.getEntriesByType('resource');
+    for (var j = 0; j < allRes.length; j++) {
+      var entry = allRes[j];
+      if (entry.name.indexOf(new URL(t.url).hostname) < 0) continue;
+      if (entry.transferSize > 0 || entry.domainLookupStart > 0) {
+        dns  = Math.round(entry.domainLookupEnd - entry.domainLookupStart);
+        tcp  = Math.round(entry.connectEnd - entry.connectStart);
+        tls  = entry.secureConnectionStart > 0 ? Math.round(entry.connectEnd - entry.secureConnectionStart) : null;
+        ttfb = entry.responseStart > 0 ? Math.round(entry.responseStart - entry.fetchStart) : null;
+        break;
+      }
+    }
+
+    if (i === 0) coldMS = total;
+    outcomes.push({total: total, outcome: outcome});
+
+    await sendReport([{
+      target_id: t.id, attempt_no: i + 1, outcome: outcome, http_status: httpStatus,
+      total_ms: total, cold_ms: i === 0 ? coldMS : null,
+      dns_ms: dns, tcp_ms: tcp, tls_ms: tls, ttfb_ms: ttfb,
+      resp_headers: i === 0 ? respHeaders : '',
+      resp_body: i === 0 ? respBody : '',
+      error: errMsg
+    }]);
+  }
+
+  var warm = outcomes.slice(1);
+  var avg = warm.length > 0 ? Math.round(warm.reduce(function(s, o) { return s + o.total; }, 0) / warm.length) : (outcomes[0] ? outcomes[0].total : 0);
+  var okCount = outcomes.filter(function(o) { return o.outcome === 'reachable'; }).length;
+
+  var allFailed = outcomes.every(function(o) { return o.outcome !== 'reachable'; });
+  var ipHtml = '-';
+  if (!allFailed) {
+    if (!bestIP) bestIP = playerIP;
+    if (!bestGeo || bestGeo === '本地' || bestGeo === '未知') bestGeo = (t.mode === 'no-cors' ? playerGeo : '');
+    if (bestGeo === '本地' || bestGeo === '未知') bestGeo = '';
+    ipHtml = '<span style="font-size:0.85em">' + esc((bestIP || '') + (bestGeo ? ' ' + bestGeo : '')) + '</span>';
+  }
+  var ipEl = document.getElementById('ip-' + t.id);
+  ipEl.innerHTML = ipHtml;
+  ipEl.className = '';
+
+  var sc = document.getElementById('status-' + t.id);
+  var statusText = okCount > 0 ? T('success') : (outcomes.some(function(o) { return o.outcome === 'timeout'; }) ? T('timeout') : T('failed'));
+  sc.textContent = statusText;
+  sc.className = 'status ' + (okCount > 0 ? 'ok' : (outcomes.some(function(o) { return o.outcome === 'timeout'; }) ? 'timeout' : 'fail'));
+
+  document.getElementById('latency-' + t.id).textContent = avg;
+  document.getElementById('cold-' + t.id).textContent = coldMS !== null ? coldMS : '-';
+}
+
+async function sendReport(results) {
+  var payload = { session_id: session, net_type: nc('effectiveType'), net_downlink: String(nc('downlink') || ''), results: results };
+  try {
+    var r = await fetch(BASE + '/api/report', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+    if (!r.ok) console.warn('[report] server error:', r.status);
+  } catch(e) { console.error('[report] network error:', e); }
+}
+
+window.addEventListener('beforeunload', function() {
+  if (!session) return;
+  navigator.sendBeacon(BASE + '/api/report', JSON.stringify({session_id: session, net_type: nc('effectiveType'), net_downlink: String(nc('downlink') || ''), results: []}));
+});
+
+function fv(obj, path) {
+  if (!path || !obj || typeof obj !== 'object') return '';
+  var key = String(path).replace(/^\$\./, '');
+  var val = obj[key];
+  return typeof val === 'string' ? val : (val != null ? String(val) : '');
+}
+function nc(k) { return (navigator.connection || {})[k] || ''; }
+function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+</script>
+</body>
+</html>

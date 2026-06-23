@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><title>拨测后台</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;font-family:'PingFang SC',Arial,'Microsoft Yahei',sans-serif;background:#f5f7fa;color:#333}
+header{background:#1a73e8;color:#fff;padding:0.7rem 1.2rem;display:flex;justify-content:space-between;align-items:center}
+header h1{font-size:1.2rem;margin:0}
+header button{background:rgba(255,255,255,0.2);color:#fff;border:1px solid rgba(255,255,255,0.4);padding:0.3rem 1rem;border-radius:4px;cursor:pointer}
+nav{background:#fff;border-bottom:1px solid #e0e0e0;display:flex;padding:0 1rem}
+nav a{padding:0.7rem 1rem;cursor:pointer;color:#555;text-decoration:none;border-bottom:2px solid transparent;font-size:0.95rem}
+nav a.active{color:#1a73e8;border-bottom-color:#1a73e8}
+main{padding:1rem;max-width:1400px;margin:0 auto}
+.panel{background:#fff;border-radius:6px;padding:1rem;box-shadow:0 1px 4px rgba(0,0,0,0.06);margin-bottom:1rem}
+table{width:100%;border-collapse:collapse;font-size:0.9rem}
+th,td{border:1px solid #e8ecf1;padding:0.5rem 0.4rem;text-align:left}
+th{background:#f0f4f8;font-weight:600}
+input,select,textarea{padding:0.4rem 0.6rem;border:1px solid #ccc;border-radius:4px;font-size:0.9rem;font-family:inherit}
+button{padding:0.4rem 1rem;border:none;border-radius:4px;cursor:pointer;font-size:0.9rem}
+.btn-primary{background:#1a73e8;color:#fff}.btn-danger{background:#d32f2f;color:#fff}.btn-sm{padding:0.2rem 0.6rem;font-size:0.8rem}
+.tag{display:inline-block;padding:0.15rem 0.5rem;border-radius:3px;font-size:0.78rem;margin:0 0.15rem}
+.tag-ok{background:#e8f5e9;color:#2e7d32}.tag-warn{background:#fff3e0;color:#e65100}.tag-fail{background:#ffebee;color:#c62828}
+.flex{display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center}
+.mb{margin-bottom:0.8rem}.mt{margin-top:0.8rem}.hidden{display:none}
+#loginBox{max-width:320px;margin:4rem auto}
+@media(max-width:700px){main{padding:0.5rem}table{font-size:0.78rem}}
+</style>
+</head>
+<body>
+<div id="loginBox"><div class="panel">
+<h2 style="text-align:center;margin-top:0">管理员登录</h2>
+<input type="password" id="loginToken" placeholder="Admin Token" style="width:100%;margin-bottom:0.8rem">
+<button class="btn-primary" onclick="login()" style="width:100%">登录</button>
+<p id="loginErr" style="color:#d32f2f;text-align:center"></p></div></div>
+
+<div id="app" class="hidden">
+<header><h1>拨测管理后台</h1><button onclick="logout()">退出</button></header>
+<nav>
+<a class="active" data-page="sessions" onclick="showPage('sessions')">测试记录</a>
+<a data-page="targets" onclick="showPage('targets')">目标配置</a>
+</nav>
+<main id="mainContent"></main>
+</div>
+
+<script>
+var token = localStorage.getItem('admin_token') || '';
+var API = '';
+
+function api(path, opts) {
+  opts = opts || {};
+  var headers = opts.headers || {};
+  headers['Authorization'] = 'Bearer ' + token;
+  if (opts.body && typeof opts.body === 'object') {
+    headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(opts.body);
+  }
+  return fetch(API + path, {method: opts.method, headers: headers, body: opts.body}).then(function(r) {
+    if (r.status === 401) { logout(); throw new Error('unauthorized'); }
+    return r.json().catch(function() { return {}; }).then(function(d) {
+      return {ok: r.ok, status: r.status, data: d};
+    });
+  });
+}
+
+function login() {
+  var t = document.getElementById('loginToken').value;
+  fetch(API + '/admin/login', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({token: t})})
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      token = d.access_token;
+      localStorage.setItem('admin_token', token);
+      document.getElementById('loginBox').classList.add('hidden');
+      document.getElementById('app').classList.remove('hidden');
+      showPage('sessions');
+    }).catch(function() { document.getElementById('loginErr').textContent = 'Token 错误'; });
+}
+
+function logout() {
+  token = ''; localStorage.removeItem('admin_token');
+  document.getElementById('loginBox').classList.remove('hidden');
+  document.getElementById('app').classList.add('hidden');
+}
+
+if (token) {
+  api('/admin/targets').then(function(r) {
+    if (r.ok) { document.getElementById('loginBox').classList.add('hidden'); document.getElementById('app').classList.remove('hidden'); showPage('sessions'); }
+    else logout();
+  }).catch(logout);
+}
+
+function showPage(page) {
+  document.querySelectorAll('nav a').forEach(function(a) { a.classList.toggle('active', a.dataset.page === page); });
+  var m = document.getElementById('mainContent');
+  if (page === 'sessions') { renderSessions(m); searchSessions(1); }
+  else if (page === 'targets') renderTargets(m);
+}
+
+// ═══ Sessions ═══
+function renderSessions(m) {
+  m.innerHTML = '<div class="panel"><h3 style="margin-top:0">测试记录</h3>' +
+    '<div class="flex mb">' +
+    '<input type="text" placeholder="测试编号" id="qSid" style="width:140px"><button class="btn-primary" onclick="lookupSession()">按编号查询</button>' +
+    '<span style="color:#888;margin:0 0.5rem">或</span>' +
+    '<input type="text" placeholder="IP" id="qIP" style="width:130px"><input type="text" placeholder="运营商" id="qISP" style="width:90px">' +
+    '<input type="text" placeholder="省份" id="qProv" style="width:80px">' +
+    '<button class="btn-primary" onclick="searchSessions(1)">搜索</button></div>' +
+    '<div id="sessionList"></div></div>';
+}
+
+function lookupSession() {
+  var sid = document.getElementById('qSid').value.trim();
+  if (!sid) return;
+  api('/admin/sessions/' + encodeURIComponent(sid)).then(function(r) {
+    var list = document.getElementById('sessionList');
+    if (!r.ok) { list.innerHTML = '<p style="color:#d32f2f">未找到</p>'; return; }
+    list.innerHTML = '';
+    renderSessionTable(list, {sessions: [r.data.session], total: 1, page: 1, page_size: 1});
+  });
+}
+
+var _page = 1;
+
+function searchSessions(page) {
+  if (!page) page = 1;
+  _page = page;
+  var p = new URLSearchParams();
+  p.set('page', page); p.set('page_size', '20');
+  var ip = document.getElementById('qIP').value.trim();
+  var isp = document.getElementById('qISP').value.trim();
+  var prov = document.getElementById('qProv').value.trim();
+  if (ip) p.set('ip', ip);
+  if (isp) p.set('isp', isp);
+  if (prov) p.set('province', prov);
+  api('/admin/sessions?' + p.toString()).then(function(r) {
+    if (!r.ok) return;
+    renderSessionTable(document.getElementById('sessionList'), r.data);
+  });
+}
+
+function renderSessionTable(container, data) {
+  var sessions = data.sessions || [];
+  var total = data.total || 0;
+  var pg = data.page || 1;
+  var ps = data.page_size || 20;
+  var totalPages = Math.ceil(total / ps);
+  var h = '<div style="max-height:500px;overflow:auto"><table><tr><th>编号</th><th>时间</th><th>IP</th><th>归属地</th><th>运营商</th><th>判定</th><th>操作</th></tr>';
+  sessions.forEach(function(s) {
+    h += '<tr id="srow-' + esc(s.session_id) + '"><td>' + esc(s.session_id) + '</td><td>' + (s.created_at ? s.created_at.slice(0, 19) : '') + '</td>' +
+      '<td>' + esc(s.player_ip) + '</td><td>' + esc([s.country, s.province, s.city].filter(Boolean).join(' ')) + '</td><td>' + esc(s.isp) + '</td>' +
+      '<td>' + verdictTag(s.verdict) + ' ' + esc(s.verdict_detail || '') + '</td>' +
+      '<td><button class="btn-primary btn-sm" onclick="loadSession(\x27' + esc(s.session_id) + '\x27,this)">详情</button></td></tr>';
+  });
+  h += '</table></div>';
+  h += '<div class="flex" style="justify-content:center;margin-top:0.5rem;gap:0.2rem"><span style="font-size:0.85rem;color:#888">共 ' + total + ' 条</span>';
+  if (pg > 1) h += '<button class="btn-sm" onclick="searchSessions(' + (pg - 1) + ')">上一页</button>';
+  for (var i = Math.max(1, pg - 2); i <= Math.min(totalPages, pg + 2); i++) {
+    h += '<button class="btn-sm ' + (i === pg ? 'btn-primary' : '') + '" onclick="searchSessions(' + i + ')">' + i + '</button>';
+  }
+  if (pg < totalPages) h += '<button class="btn-sm" onclick="searchSessions(' + (pg + 1) + ')">下一页</button>';
+  h += '</div>';
+  container.innerHTML = h;
+}
+
+window._dt = {};
+
+function loadSession(sid, btn) {
+  var existing = document.getElementById('det-' + sid);
+  if (existing) { existing.remove(); btn.textContent = '详情'; return; }
+  btn.textContent = '...';
+  api('/admin/sessions/' + encodeURIComponent(sid)).then(function(r) {
+    if (!r.ok) { btn.textContent = '详情'; return; }
+    var s = r.data.session;
+    var results = r.data.results || [];
+
+    var byTarget = new Map();
+    results.forEach(function(r) { if (!byTarget.has(r.target_id)) byTarget.set(r.target_id, []); byTarget.get(r.target_id).push(r); });
+
+    var prHtml = '';
+    byTarget.forEach(function(attempts) {
+      var r = attempts[0];
+      var gid = 'g' + r.target_id;
+      var sorted = attempts.slice().sort(function(a, b) { return a.attempt_no - b.attempt_no; });
+      var okCount = attempts.filter(function(a) { return a.outcome === 'reachable'; }).length;
+      var warm = sorted.slice(1);
+      var warmTotal = warm.reduce(function(s, a) { return s + a.total_ms; }, 0);
+      var avg = warm.length > 0 ? Math.round(warmTotal / warm.length) : (sorted[0] ? sorted[0].total_ms : 0);
+      var hasTiming = sorted.some(function(a) { return a.dns_ms != null || a.tcp_ms != null || a.tls_ms != null || a.ttfb_ms != null; });
+
+      var det = '<td colspan="7" style="text-align:left;background:#fafbfc;padding:0.6rem">';
+      det += '<table style="font-size:0.78rem;margin-bottom:0.4rem"><tr><th>#</th><th>结果</th><th>延迟</th><th>冷连</th>';
+      if (hasTiming) det += '<th>DNS</th><th>TCP</th><th>SSL</th><th>TTFB</th>';
+      det += '<th>状态码</th></tr>';
+      sorted.forEach(function(a) {
+        det += '<tr><td>' + a.attempt_no + '</td><td>' + outcomeTag(a.outcome) + '</td><td>' + a.total_ms + 'ms</td><td>' + (a.cold_ms != null ? a.cold_ms + 'ms' : '-') + '</td>';
+        if (hasTiming) det += '<td>' + (a.dns_ms != null ? a.dns_ms + 'ms' : '-') + '</td><td>' + (a.tcp_ms != null ? a.tcp_ms + 'ms' : '-') + '</td><td>' + (a.tls_ms != null ? a.tls_ms + 'ms' : '-') + '</td><td>' + (a.ttfb_ms != null ? a.ttfb_ms + 'ms' : '-') + '</td>';
+        det += '<td>' + (a.http_status != null ? a.http_status : '-') + '</td></tr>';
+      });
+      det += '</table>';
+      if (r.http_status != null) det += '<div style="margin-top:0.2rem"><b>STATUS</b> ' + r.http_status + '</div>';
+      if (r.error) det += '<div><b>错误:</b> ' + esc(r.error) + '</div>';
+      if (r.resp_headers && r.resp_headers.length > 0) {
+        try {
+          var hdrs = JSON.parse(r.resp_headers);
+          det += '<div style="margin-top:0.3rem"><b>HEADERS</b></div><table style="margin-top:0.1rem;width:100%"><tr><th>Header</th><th>Value</th></tr>';
+          Object.keys(hdrs).forEach(function(k) { det += '<tr><td style="font-size:0.72rem">' + esc(k) + '</td><td style="font-size:0.72rem">' + esc(hdrs[k]) + '</td></tr>'; });
+          det += '</table>';
+        } catch(e) {}
+      }
+      if (r.resp_body) det += '<div style="margin-top:0.3rem"><b>BODY</b></div><div style="max-height:200px;overflow:auto;background:#f5f5f5;border:1px solid #ddd;padding:0.4rem;font-family:monospace;font-size:0.7rem;white-space:pre-wrap;word-break:break-all">' + esc(r.resp_body) + '</div>';
+      det += '</td>';
+      window._dt[gid] = det;
+
+      prHtml += '<tr id="row-' + gid + '"><td>' + esc(r.target_name) + '</td><td>' + esc(r.group_name) + '</td>' +
+        '<td style="font-size:0.72em;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(r.url) + '">' + esc(r.url) + '</td>' +
+        '<td>' + outcomeTag(r.outcome) + (r.http_status ? ' ' + r.http_status : '') + '</td>' +
+        '<td>' + avg + 'ms</td><td>' + (r.cold_ms || '-') + 'ms</td>' +
+        '<td><button class="btn-primary btn-sm" onclick="toggleProbeDetail(\x27' + gid + '\x27,this)">详细(' + okCount + '/' + sorted.length + ')</button></td></tr>';
+    });
+
+    var detailHTML = '<td colspan="7" style="text-align:left;background:#fafbfc;padding:0.6rem">' +
+      '<div class="flex" style="font-size:0.9rem;flex-wrap:wrap;gap:0.3rem 1rem">' +
+      '<span><b>IP:</b> ' + esc(s.player_ip) + '</span><span><b>归属地:</b> ' + esc([s.country, s.province, s.city].filter(Boolean).join(' ')) + '</span><span><b>ISP:</b> ' + esc(s.isp) + '</span>' +
+      '<span><b>网络:</b> ' + (s.net_type || '?') + ' ' + (s.net_downlink || '') + '</span><span><b>OS:</b> ' + esc(s.os) + '/' + esc(s.browser) + '</span>' +
+      '<span><b>判定:</b> ' + verdictTag(s.verdict) + ' ' + esc(s.verdict_detail || '') + '</span>' +
+      (s.game ? '<span><b>游戏:</b> ' + esc(s.game) + '</span>' : '') + (s.server ? '<span><b>区服:</b> ' + esc(s.server) + '</span>' : '') + (s.ticket ? '<span><b>工单:</b> ' + esc(s.ticket) + '</span>' : '') +
+      '</div>' +
+      '<div class="flex mt" style="gap:0.3rem">' +
+      '<input type="text" placeholder="备注" id="nt-' + esc(s.session_id) + '" value="' + esc(s.note || '') + '" style="width:180px;font-size:0.8rem">' +
+      '<input type="text" placeholder="症状" id="sy-' + esc(s.session_id) + '" value="' + esc(s.symptom || '') + '" style="width:150px;font-size:0.8rem">' +
+      '<button class="btn-primary btn-sm" onclick="saveNote(\x27' + esc(s.session_id) + '\x27)">保存</button></div>' +
+      '<table style="margin-top:0.5rem;width:100%"><thead><tr><th>节点</th><th>分组</th><th>URL</th><th>结果</th><th>延迟</th><th>冷连</th><th>操作</th></tr></thead><tbody>' + prHtml + '</tbody></table></td>';
+
+    var row = document.getElementById('srow-' + sid);
+    if (!row) { btn.textContent = '详情'; return; }
+    var tr = document.createElement('tr');
+    tr.id = 'det-' + sid;
+    tr.innerHTML = detailHTML;
+    row.after(tr);
+    btn.textContent = '收起';
+  });
+}
+
+function toggleProbeDetail(gid, btn) {
+  var row = document.getElementById('row-' + gid);
+  if (!row) return;
+  var existing = document.getElementById('det-' + gid);
+  if (existing) { existing.remove(); btn.textContent = '详细'; return; }
+  var tr = document.createElement('tr');
+  tr.id = 'det-' + gid;
+  tr.innerHTML = window._dt[gid] || '<td colspan="7">无数据</td>';
+  row.after(tr);
+  btn.textContent = '收起';
+}
+
+function saveNote(sid) {
+  var note = document.getElementById('nt-' + sid);
+  var symptom = document.getElementById('sy-' + sid);
+  api('/admin/sessions/' + encodeURIComponent(sid), {method: 'PATCH', body: {note: note ? note.value : '', symptom: symptom ? symptom.value : ''}})
+    .then(function() { alert('已保存'); });
+}
+
+// ═══ Targets ═══
+function renderTargets(main) {
+  api('/admin/targets').then(function(r) {
+    if (!r.ok) return;
+    main.innerHTML = '<div class="panel"><h3 style="margin-top:0">目标配置</h3>' +
+      '<button class="btn-primary mb" onclick="showTargetForm()">+ 新增目标</button>' +
+      '<div id="targetForm" class="hidden panel mb" style="background:#f8fafc">' +
+      '<h4 id="tfTitle">新增目标</h4><input type="hidden" id="tfId">' +
+      '<div class="flex mb"><label style="width:80px">名称</label><input id="tfName" style="width:200px"></div>' +
+      '<div class="flex mb"><label style="width:80px">分组</label><input id="tfGroup" list="dlGroup" style="width:180px"><datalist id="dlGroup"><option>基线-国内</option><option>基线-国际</option><option>SDK</option><option>CDN</option><option>区服</option><option>登录</option><option>支付</option><option>聊天</option><option>大厅</option></datalist></div>' +
+      '<div class="flex mb"><label style="width:80px">角色</label><input id="tfRole" list="dlRole" style="width:180px"><datalist id="dlRole"><option value="基线">基线（参照站点）</option><option value="业务">业务（我方 API）</option></datalist></div>' +
+      '<div class="flex mb"><label style="width:80px">URL</label><input id="tfURL" style="width:100%"></div>' +
+      '<div class="flex mb"><label style="width:80px">Method</label><select id="tfMethod"><option>GET</option><option>POST</option></select></div>' +
+      '<div class="flex mb"><label style="width:80px">模式</label><select id="tfMode"><option value="no-cors">no-cors</option><option value="cors">cors</option></select></div>' +
+      '<div class="flex mb"><label style="width:80px">超时(ms)</label><input id="tfTimeout" type="number" value="5000" style="width:80px"></div>' +
+      '<div class="flex mb"><label style="width:80px">重复次数</label><input id="tfRepeat" type="number" value="4" style="width:60px"></div>' +
+      '<div class="flex mb"><label style="width:80px">CacheBust</label><input type="checkbox" id="tfCB"></div>' +
+      '<div class="flex mb"><label style="width:80px">展示规则</label><input id="tfExtract" placeholder=\x27{"ip":"$.ip"}\x27 style="width:300px"></div>' +
+      '<div class="flex mb"><label style="width:80px">排序</label><input id="tfOrder" type="number" value="0" style="width:60px"></div>' +
+      '<div class="flex"><label style="width:80px">玩家可见</label><input type="checkbox" id="tfVisible" checked></div>' +
+      '<div class="flex mt"><button class="btn-primary" onclick="saveTarget()">保存</button> <button onclick="document.getElementById(\x27targetForm\x27).classList.add(\x27hidden\x27)">取消</button></div></div>' +
+      '<div style="overflow:auto"><table><tr><th>#</th><th>名称</th><th>分组</th><th>角色</th><th>URL</th><th>模式</th><th>超时</th><th>重复</th><th>状态</th><th>操作</th></tr>' +
+      r.data.filter(function(t) { return t.enabled === 1; }).map(function(t, i) {
+        return '<tr><td>' + (i + 1) + '</td><td>' + esc(t.name) + '</td><td>' + esc(t.group_name) + '</td><td>' + t.role + '</td>' +
+          '<td style="font-size:0.8em;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(t.url) + '</td>' +
+          '<td>' + t.mode + '</td><td>' + t.timeout_ms + '</td><td>' + t.repeat_count + '</td>' +
+          '<td><span class="tag tag-ok">启用</span></td>' +
+          '<td><button class="btn-primary btn-sm" onclick="editTarget(' + t.id + ')">编辑</button> <button class="btn-danger btn-sm" onclick="delTarget(' + t.id + ')">删除</button></td></tr>';
+      }).join('') + '</table></div></div>';
+  });
+}
+
+function showTargetForm(id) {
+  document.getElementById('targetForm').classList.remove('hidden');
+  if (!id) {
+    document.getElementById('tfTitle').textContent = '新增目标';
+    document.getElementById('tfId').value = '';
+    ['tfName', 'tfURL', 'tfExtract'].forEach(function(f) { document.getElementById(f).value = ''; });
+    document.getElementById('tfMethod').value = 'GET';
+    document.getElementById('tfTimeout').value = '5000';
+    document.getElementById('tfRepeat').value = '4';
+    document.getElementById('tfOrder').value = '0';
+    document.getElementById('tfCB').checked = false;
+    document.getElementById('tfVisible').checked = true;
+  }
+}
+
+function editTarget(id) {
+  api('/admin/targets').then(function(r) {
+    if (!r.ok) return;
+    var t = r.data.find(function(x) { return x.id === id; });
+    if (!t) return;
+    showTargetForm(id);
+    document.getElementById('tfTitle').textContent = '编辑目标 #' + id;
+    document.getElementById('tfId').value = t.id;
+    document.getElementById('tfName').value = t.name;
+    document.getElementById('tfGroup').value = t.group_name;
+    document.getElementById('tfRole').value = t.role;
+    document.getElementById('tfURL').value = t.url;
+    document.getElementById('tfMethod').value = t.method || 'GET';
+    document.getElementById('tfMode').value = t.mode;
+    document.getElementById('tfTimeout').value = t.timeout_ms;
+    document.getElementById('tfRepeat').value = t.repeat_count;
+    document.getElementById('tfCB').checked = t.cache_bust === 1;
+    document.getElementById('tfExtract').value = t.extract_rule || '';
+    document.getElementById('tfOrder').value = t.display_order;
+    document.getElementById('tfVisible').checked = t.player_visible === 1;
+  });
+}
+
+function saveTarget() {
+  var id = document.getElementById('tfId').value;
+  var body = {
+    name: document.getElementById('tfName').value,
+    group_name: document.getElementById('tfGroup').value,
+    role: document.getElementById('tfRole').value,
+    url: document.getElementById('tfURL').value,
+    method: document.getElementById('tfMethod').value,
+    mode: document.getElementById('tfMode').value,
+    timeout_ms: parseInt(document.getElementById('tfTimeout').value) || 5000,
+    repeat_count: parseInt(document.getElementById('tfRepeat').value) || 4,
+    cache_bust: document.getElementById('tfCB').checked ? 1 : 0,
+    extract_rule: document.getElementById('tfExtract').value,
+    player_visible: document.getElementById('tfVisible').checked ? 1 : 0,
+    display_order: parseInt(document.getElementById('tfOrder').value) || 0,
+    enabled: 1
+  };
+  var p;
+  if (id) { body.id = parseInt(id); p = api('/admin/targets/' + id, {method: 'PUT', body: body}); }
+  else { p = api('/admin/targets', {method: 'POST', body: body}); }
+  p.then(function(r) {
+    if (!r.ok) { alert('保存失败: ' + (r.data.error || r.status)); return; }
+    document.getElementById('targetForm').classList.add('hidden');
+    showPage('targets');
+  });
+}
+
+function delTarget(id) {
+  if (!confirm('确定删除目标 #' + id + '?')) return;
+  api('/admin/targets/' + id, {method: 'DELETE'}).then(function(r) {
+    if (!r.ok) { alert('删除失败: ' + (r.data.error || r.status)); return; }
+    showPage('targets');
+  });
+}
+
+// ── utils ──
+function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+function verdictTag(v) {
+  var m = {ALL_OK: 'tag-ok', PARTIAL_FAIL: 'tag-warn', OUR_API_DOWN: 'tag-fail', PLAYER_NET_DOWN: 'tag-fail'};
+  return '<span class="tag ' + (m[v] || 'tag-info') + '">' + (v || '?') + '</span>';
+}
+function outcomeTag(o) {
+  var m = {reachable: '<span class="tag tag-ok">可连</span>', timeout: '<span class="tag tag-warn">超时</span>', fast_fail: '<span class="tag tag-fail">快失败</span>', http_error: '<span class="tag tag-fail">HTTP错</span>'};
+  return m[o] || o;
+}
+</script>
+</body>
+</html>

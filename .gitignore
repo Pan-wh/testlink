@@ -1,0 +1,7 @@
+/testlink
+/cmd/server/server
+.idea/
+.vscode/
+*.swp
+.DS_Store
+/data/

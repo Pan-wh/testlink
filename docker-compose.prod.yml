@@ -1,0 +1,28 @@
+version: '3.8'
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    ports:
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: testlink
+      CLICKHOUSE_USER: testlink
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+      CLICKHOUSE_PASSWORD: "testlink123"
+    volumes:
+      - ./data/clickhouse:/var/lib/clickhouse
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+
+  app:
+    image: whpan/testlink:latest
+    ports:
+      - "9080:8080"
+    depends_on:
+      - clickhouse
+      - redis
+    restart: unless-stopped
+

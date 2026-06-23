@@ -1,0 +1,7 @@
+.git
+.gitignore
+*.md
+DESIGN.md
+docker-compose.yml
+data/
+.DS_Store

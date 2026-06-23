@@ -1,0 +1,21 @@
+version: '3.8'
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    ports:
+      - "9000:9000"
+      - "8123:8123"
+    environment:
+      CLICKHOUSE_DB: testlink
+      CLICKHOUSE_USER: testlink
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+      CLICKHOUSE_PASSWORD: "testlink123"
+    volumes:
+      - ./data/clickhouse:/var/lib/clickhouse
+      - ./migrations:/docker-entrypoint-initdb.d
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+volumes:
+  ch_data:
