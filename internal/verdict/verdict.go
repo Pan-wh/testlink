@@ -82,7 +82,7 @@ func Compute(results []model.ProbeResult, targets []model.Target) (code, detail 
 		return "INCONCLUSIVE", "数据不完整，无法判定。" + strings.Join(notes, "；")
 
 	default:
-		d := "网络层正常，进不去大概率非网络问题"
+		d := "当前网络连接测试正常"
 		if len(notes) > 0 {
 			d += "；" + strings.Join(notes, "；")
 		}
