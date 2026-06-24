@@ -277,16 +277,17 @@ function renderTargets(main) {
       '<div class="flex mb"><label style="width:80px">模式</label><select id="tfMode"><option value="no-cors">no-cors</option><option value="cors">cors</option></select></div>' +
       '<div class="flex mb"><label style="width:80px">超时(ms)</label><input id="tfTimeout" type="number" value="5000" style="width:80px"></div>' +
       '<div class="flex mb"><label style="width:80px">重复次数</label><input id="tfRepeat" type="number" value="4" style="width:60px"></div>' +
+      '<div class="flex mb"><label style="width:80px">延迟阈值</label><input id="tfLatencyWarn" type="number" value="0" style="width:90px"><span style="color:#888;font-size:0.8rem">ms，0=不检查</span></div>' +
       '<div class="flex mb"><label style="width:80px">CacheBust</label><input type="checkbox" id="tfCB"></div>' +
       '<div class="flex mb"><label style="width:80px">展示规则</label><input id="tfExtract" placeholder=\x27{"ip":"$.ip"}\x27 style="width:300px"></div>' +
       '<div class="flex mb"><label style="width:80px">排序</label><input id="tfOrder" type="number" value="0" style="width:60px"></div>' +
       '<div class="flex"><label style="width:80px">玩家可见</label><input type="checkbox" id="tfVisible" checked></div>' +
       '<div class="flex mt"><button class="btn-primary" onclick="saveTarget()">保存</button> <button onclick="document.getElementById(\x27targetForm\x27).classList.add(\x27hidden\x27)">取消</button></div></div>' +
-      '<div style="overflow:auto"><table><tr><th>#</th><th>名称</th><th>分组</th><th>角色</th><th>URL</th><th>模式</th><th>超时</th><th>重复</th><th>状态</th><th>操作</th></tr>' +
+      '<div style="overflow:auto"><table><tr><th>#</th><th>名称</th><th>分组</th><th>角色</th><th>URL</th><th>模式</th><th>超时</th><th>重复</th><th>延迟阈值</th><th>状态</th><th>操作</th></tr>' +
       r.data.filter(function(t) { return t.enabled === 1; }).map(function(t, i) {
         return '<tr><td>' + (i + 1) + '</td><td>' + esc(t.name) + '</td><td>' + esc(t.group_name) + '</td><td>' + t.role + '</td>' +
           '<td style="font-size:0.8em;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(t.url) + '</td>' +
-          '<td>' + t.mode + '</td><td>' + t.timeout_ms + '</td><td>' + t.repeat_count + '</td>' +
+          '<td>' + t.mode + '</td><td>' + t.timeout_ms + '</td><td>' + t.repeat_count + '</td><td>' + (t.latency_warn_ms || 0) + '</td>' +
           '<td><span class="tag tag-ok">启用</span></td>' +
           '<td><button class="btn-primary btn-sm" onclick="editTarget(' + t.id + ')">编辑</button> <button class="btn-danger btn-sm" onclick="delTarget(' + t.id + ')">删除</button></td></tr>';
       }).join('') + '</table></div></div>';
@@ -302,6 +303,7 @@ function showTargetForm(id) {
     document.getElementById('tfMethod').value = 'GET';
     document.getElementById('tfTimeout').value = '5000';
     document.getElementById('tfRepeat').value = '4';
+    document.getElementById('tfLatencyWarn').value = '0';
     document.getElementById('tfOrder').value = '0';
     document.getElementById('tfCB').checked = false;
     document.getElementById('tfVisible').checked = true;
@@ -324,6 +326,7 @@ function editTarget(id) {
     document.getElementById('tfMode').value = t.mode;
     document.getElementById('tfTimeout').value = t.timeout_ms;
     document.getElementById('tfRepeat').value = t.repeat_count;
+    document.getElementById('tfLatencyWarn').value = t.latency_warn_ms || 0;
     document.getElementById('tfCB').checked = t.cache_bust === 1;
     document.getElementById('tfExtract').value = t.extract_rule || '';
     document.getElementById('tfOrder').value = t.display_order;
@@ -342,6 +345,7 @@ function saveTarget() {
     mode: document.getElementById('tfMode').value,
     timeout_ms: parseInt(document.getElementById('tfTimeout').value) || 5000,
     repeat_count: parseInt(document.getElementById('tfRepeat').value) || 4,
+    latency_warn_ms: parseInt(document.getElementById('tfLatencyWarn').value) || 0,
     cache_bust: document.getElementById('tfCB').checked ? 1 : 0,
     extract_rule: document.getElementById('tfExtract').value,
     player_visible: document.getElementById('tfVisible').checked ? 1 : 0,

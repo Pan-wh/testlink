@@ -6,7 +6,7 @@
 
 - **玩家侧**：一个链接打开，自动探测配置的所有目标，显示可达性、延迟、冷连接耗时，带唯一测试编号供截图回传。支持 4 语言（简中 / 繁中 / English / Tiếng Việt）自动跟随浏览器
 - **后台侧**：目标配置完全自定义（分组名、角色均可自由输入）、按编号或条件搜索历史 session、展开每次拨测的完整详情（分段耗时表、STATUS/HEADERS/BODY）
-- **自动判定**：基线站点对照 → 玩家网络故障 / 我方 API 故障 / 部分异常 / 正常
+- **自动判定**：基线站点对照 + 延迟阈值 → 玩家网络故障 / 我方 API 故障 / 部分异常 / 正常；未完成的目标不会被误判为全部故障
 - **隐私安全**：所有探测由玩家浏览器直连目标发起，后端不代理、不中转请求
 
 ## 技术栈
@@ -55,9 +55,13 @@ docker run -d --name testlink-ck -p 9000:9000 \
 docker run -d --name testlink-redis -p 6379:6379 \
   -e TZ=Asia/Shanghai redis:alpine
 
-# App（config.yaml 中 clickhouse/redis host 填服务器内网 IP）
+# App（推荐用环境变量覆盖连接地址；也可以直接改 config.yaml）
 docker run -d --name testlink-app -p 8080:8080 \
   -e TZ=Asia/Shanghai \
+  -e TESTLINK_CLICKHOUSE_HOST="服务器内网IP" \
+  -e TESTLINK_REDIS_HOST="服务器内网IP" \
+  -e TESTLINK_ADMIN_TOKEN="your-token" \
+  -e TESTLINK_JWT_SECRET="random-string" \
   -v $(pwd)/config.yaml:/app/config.yaml \
   whpan/testlink:latest
 ```
@@ -80,6 +84,9 @@ docker buildx build --platform linux/amd64,linux/arm64 -t whpan/testlink:latest 
 ## 配置要点
 
 ```yaml
+server:
+  trusted_proxy_cidrs: ["127.0.0.1", "10.0.0.0/8"]  # 生产反代/负载均衡 CIDR，避免信任任意 XFF
+
 clickhouse:
   host: "10.x.x.x"        # 服务器内网 IP
   password: "testlink123"
@@ -101,6 +108,24 @@ ratelimit:
   session_per_ip_per_min: 5     # 单 IP 每分钟最多创建 5 个 session
 ```
 
+也支持用环境变量覆盖 `config.yaml` 中的连接和鉴权配置，便于 Docker 部署：
+
+| 环境变量 | 对应配置 |
+|---|---|
+| `TESTLINK_PORT` | `server.port` |
+| `TESTLINK_TRUSTED_PROXY_CIDRS` | `server.trusted_proxy_cidrs`，逗号分隔 |
+| `TESTLINK_CLICKHOUSE_HOST` | `clickhouse.host` |
+| `TESTLINK_CLICKHOUSE_PORT` | `clickhouse.port` |
+| `TESTLINK_CLICKHOUSE_DATABASE` | `clickhouse.database` |
+| `TESTLINK_CLICKHOUSE_USERNAME` | `clickhouse.username` |
+| `TESTLINK_CLICKHOUSE_PASSWORD` | `clickhouse.password` |
+| `TESTLINK_REDIS_HOST` | `redis.host` |
+| `TESTLINK_REDIS_PORT` | `redis.port` |
+| `TESTLINK_REDIS_PASSWORD` | `redis.password` |
+| `TESTLINK_ADMIN_TOKEN` | `auth.admin_token` |
+| `TESTLINK_JWT_SECRET` | `auth.jwt_secret` |
+
+
 ## 目标配置说明
 
 后台可自由增删改目标。每个目标有两个关键属性：
@@ -108,6 +133,7 @@ ratelimit:
 - **角色**：`基线`（第三方参照站点，用于判断玩家自身网络）或 `业务`（我方 API，出问题就是故障）
 - **分组**：自由命名，纯粹用于 UI 归类展示，不影响判定逻辑
 - **模式**：`cors`（可读取响应状态码/头/体）或 `no-cors`（仅连通性检测）
+- **延迟阈值**：`latency_warn_ms`，0 表示不检查；大于 0 时，用暖连接平均延迟（第 2 次及以后，若只有 1 次则用第 1 次）判断是否偏慢
 
 ## 判定逻辑
 
@@ -116,6 +142,8 @@ ratelimit:
 | 基线全挂 | 玩家自身网络异常 |
 | 基线通 + 业务全挂 | 我方 API 全部不可达 |
 | 基线通 + 业务部分挂 | 部分模块异常（列出具体名称） |
+| 基线通 + 业务可达但超过延迟阈值 | 部分模块异常（列出延迟较高目标） |
+| 上报不完整（例如玩家提前关闭页面） | 数据不完整，不做“全部不可达”误判 |
 | 基线通 + 业务全通 | 网络层正常 |
 
 ## 项目结构

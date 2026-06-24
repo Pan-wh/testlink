@@ -125,7 +125,7 @@
                                           │ - 目标CRUD        │
                                           │ - 按编号查询       │
                                           │ - 多维搜索         │
-                                          │ - 分析看板         │
+                                          │ - 记录详情         │
                                           └──────────────────┘
 ```
 
@@ -203,12 +203,16 @@
 
 | 基线 | 业务 | verdict_code | 结论 |
 |---|---|---|---|
-| ❌ | - | `PLAYER_NET_DOWN` | 玩家自身网络异常 |
-| ✅ | 全❌ | `OUR_API_DOWN` | 我方 API 全部不可达 |
+| 全❌ | - | `PLAYER_NET_DOWN` | 玩家自身网络异常 |
+| ✅ | 全❌ 且业务目标均已完成上报 | `OUR_API_DOWN` | 我方 API 全部不可达 |
 | ✅ | 部分❌ | `PARTIAL_FAIL` | 部分模块异常 |
-| ✅ | 全✅ | `ALL_OK` | 网络层正常 |
+| ✅ | 可达但超过延迟阈值 | `PARTIAL_FAIL` | 部分模块延迟较高 |
+| ✅ | 目标未完成上报 | `INCONCLUSIVE` | 数据不完整，避免误判全部故障 |
+| ✅ | 全✅且未超过延迟阈值 | `ALL_OK` | 网络层正常 |
 
 - 任一基线 reachable 即视为基线通（冗余避免单点误判）
+- 业务目标使用 session 创建时保存的 `config_snapshot` 作为期望目标列表，玩家提前关页导致目标未上报时不会被当成“业务全挂”
+- `latency_warn_ms > 0` 时，使用暖连接平均延迟（第 2 次及以后；若只有 1 次则用第 1 次）判断是否偏慢
 - 判定在 Go `internal/verdict` 模块服务端计算，玩家页同步显示
 
 ### 6.3 路径覆盖诊断（你给的三个接口恰好覆盖三条路径）
@@ -232,13 +236,14 @@ CREATE TABLE tl_target (
     id              UInt64,
     name            String,
     group_name      String,        -- 登录/CDN/区服/基线-国内/基线-国际
-    role            String,        -- baseline/business
+    role            String,        -- 基线/业务，兼容旧 baseline/business
     url             String,        -- 含端口/查询参数
     method          String,        -- 默认 GET
     mode            String,        -- cors/no-cors
     timeout_ms      UInt32,        -- 默认 5000
     repeat_count    UInt8,         -- 默认 4
     cache_bust      UInt8,         -- 默认 0, CDN 静态目标置 1
+    latency_warn_ms UInt32,        -- 延迟阈值，0=不检查
     extract_rule    String,        -- JSON, 可空, cors 目标从响应体提取展示字段
     player_visible  UInt8,         -- 默认 1
     display_order   UInt32,
@@ -304,8 +309,8 @@ CREATE TABLE tl_probe_result (
     session_id     String,
     target_id      UInt64,
     target_name    String,          -- 冗余, 免 join 展示
-    group_name     String,          -- 冗余, baseline/business 分组聚合
-    role           String,          -- 'baseline'/'business'
+    group_name     String,          -- 冗余, UI 分组
+    role           String,          -- '基线'/'业务'，兼容旧 baseline/business
     url            String,
     host           String,
     port           UInt16,
@@ -318,7 +323,10 @@ CREATE TABLE tl_probe_result (
     tcp_ms         Nullable(UInt16),
     tls_ms         Nullable(UInt16),
     ttfb_ms        Nullable(UInt16),
-    resolved_ip    Nullable(String),-- DoH 解析 IP (Phase 3)
+    resolved_ip    Nullable(String),-- 浏览器无法提供真实解析 IP，当前通常为空
+    resp_headers   String,
+    resp_body      String,
+    resolved_geo   Nullable(String),
     error          String,
     created_at     DateTime,
     -- 冗余 session 上下文, 供多维聚合免 join
@@ -381,8 +389,8 @@ GROUP BY target_name, outcome;
   "session_id": "0622-K7QX9P",
   "player": {"ip":"120.x.x.x","country":"中国","province":"广东","city":"深圳","isp":"电信","asn":"4134"},
   "targets": [
-    {"id":1,"name":"Google","group_name":"基线-国际","role":"baseline","url":"https://www.google.com/generate_204","mode":"no-cors","timeout_ms":5000,"repeat_count":2,"cache_bust":false},
-    {"id":7,"name":"区服列表","group_name":"区服","role":"business","url":"https://game.example.com:9001/index.php/server/simplelists?...","mode":"no-cors","timeout_ms":5000,"repeat_count":4,"cache_bust":false}
+    {"id":1,"name":"Google","group_name":"基线-国际","role":"基线","url":"https://www.google.com/generate_204","mode":"no-cors","timeout_ms":5000,"repeat_count":2,"cache_bust":0,"latency_warn_ms":0},
+    {"id":7,"name":"区服列表","group_name":"区服","role":"业务","url":"https://game.example.com:9001/index.php/server/simplelists?...","mode":"no-cors","timeout_ms":5000,"repeat_count":4,"cache_bust":0,"latency_warn_ms":3000}
   ]
 }
 ```
@@ -402,7 +410,7 @@ GROUP BY target_name, outcome;
 ```
 - `?final=true`：标记本次为最后一批，触发服务端计算 verdict 并返回：
 ```json
-{"verdict":"PARTIAL_FAIL","verdict_detail":"区服列表(9001) timeout"}
+{"verdict":"PARTIAL_FAIL","verdict_detail":"部分模块异常: 区服列表；延迟较高: SDK 800ms>500ms"}
 ```
 - 后端：校验 target_id ∈ enabled targets（白名单）→ 富化 geo（取自 session）→ 写 ClickHouse → final 时算 verdict 回写 tl_session（追加新版本行）。
 
@@ -416,11 +424,9 @@ GROUP BY target_name, outcome;
 | POST | `/admin/targets` | 新增目标 |
 | PUT | `/admin/targets/:id` | 修改 |
 | DELETE | `/admin/targets/:id` | 删除（软删 enabled=0） |
-| GET | `/admin/sessions` | 多维搜索（session_id/ip/isp/region/game/ticket/time） |
+| GET | `/admin/sessions` | 多维搜索（ip/isp/province/game/ticket/time，分页） |
 | GET | `/admin/sessions/:id` | 详情：session + 全部 probe_result |
 | PATCH | `/admin/sessions/:id` | 补 note/symptom |
-| GET | `/admin/stats` | 聚合分析（维度+过滤参数，返回成功率/分位/分布） |
-| GET/PUT | `/admin/settings` | 限流阈值等配置 |
 
 ---
 
@@ -435,15 +441,15 @@ GROUP BY target_name, outcome;
 | 全局 session | 100/秒（保护） | `rl:global:session` |
 | 超限 | HTTP 429 | |
 
-- 滑动窗口或令牌桶（Redis Lua）。
-- 阈值在 `/admin/settings` 可调。
+- 当前实现为 Redis `INCR` + `EXPIRE` 固定窗口。
+- Redis 不可用时自动放通，不阻塞业务。
 
 ### 9.2 安全
 
-- **目标白名单**：玩家页只能测后端下发的 enabled 目标；`/api/report` 拒绝未知 `target_id`，**玩家不可注入任意 URL**（防开放代理/放大攻击）。
+- **目标白名单**：玩家页只能测后端下发的 enabled 目标；`/api/report` 忽略未知 `target_id`，**玩家不可注入任意 URL**（防开放代理/放大攻击）。
 - **payload 校验**：outcome ∈ 枚举、latency 有界、字段长度限制。
 - **Admin 鉴权**：JWT（无状态，不落 DB）或静态 token，独立路径前缀 `/admin`。账号凭证放配置文件/env，不进 ClickHouse。
-- **XFF 链路**：`player_ip` 取 `X-Forwarded-For` 最右可信跳，防伪造；若多级代理配置可信代理数。
+- **XFF 链路**：当前由 Gin `ClientIP()` 根据 `trusted_proxy_cidrs`（优先）或旧的 `trusted_proxies` 配置取客户端 IP；生产反代部署时必须填写反代/负载均衡 CIDR，避免把代理 IP 或伪造 XFF 当成玩家 IP。
 - **HTTPS + HSTS**；tags 输入消毒；ClickHouse 账号限表。
 - **账号信息**：拨测 URL 中的真实账号（如 `account=demo`）建议后台配 dummy 账号专供拨测，避免公开页暴露。
 
@@ -451,31 +457,25 @@ GROUP BY target_name, outcome;
 
 ## 10. GeoIP 方案
 
-需下载 **3 个离线库**（国内 + 国际 + ASN），全部本地存储、启动加载进内存、微秒级查询：
+当前使用 **4 个离线库**，全部本地存储、启动加载：
 
-| 库 | 文件 | 大小 | 用途 | 下载来源 | Go 读取 |
-|---|---|---|---|---|---|
-| **ip2region** | `ip2region.xdb` | ~11MB | 国内 省/市/ISP | `github.com/lionsoul2014/ip2region` 的 `data/` 目录直下 | 官方 binding `github.com/lionsoul2014/ip2region/binding/golang/xdb` |
-| **MaxMind City** | `GeoLite2-City.mmdb` | ~70MB | 国际 country/省/city | maxmind.com（免费账号+license key）**或** DB-IP `dbip-city-lite.mmdb`（免账号直下） | mmdb 读取库（pkg.go.dev 搜 `maxminddb`） |
-| **MaxMind ASN** | `GeoLite2-ASN.mmdb` | ~9MB | 国际 ASN/运营商 | 同上，或 DB-IP `dbip-asn-lite.mmdb` | 同上 |
-
-### 下载建议
-
-- **国内为主 → ip2region 必下**：国内省市 + ISP 粒度最好（输出形如 `中国|0|广东|深圳|电信`），MaxMind/DB-IP 对国内 ISP 粒度都不如它。
-- **国际补充**：你有新加坡/台湾 SDK，国际玩家需补 MaxMind 或 DB-IP。两者同为 `.mmdb` 格式、Go 读取方式一致。
-  - **DB-IP lite 免账号直接下载更省事**（dbip.com → lite 版 mmdb）；
-  - MaxMind GeoLite2 要注册免费账号拿 license key，但更主流、社区资料多。二选一即可。
-- ip2region xdb 支持 vectorIndex 缓存或全量内存加载，查询微秒级。
+| 库 | 文件 | 用途 | Go 读取 |
+|---|---|---|---|
+| **ip2region IPv4** | `ip2region_v4.xdb` | 中国大陆省/市/ISP | `github.com/lionsoul2014/ip2region/binding/golang/xdb` |
+| **ip2region IPv6** | `ip2region_v6.xdb` | IPv6 的中国大陆省/市/ISP | 同上 |
+| **MaxMind Country** | `GeoLite2-Country.mmdb` | 港澳台/国际国家或地区 | `github.com/IncSW/geoip2` |
+| **MaxMind ASN** | `GeoLite2-ASN.mmdb` | ASN/运营商组织 | `github.com/IncSW/geoip2` |
 
 ### 融合查询逻辑（session 富化时）
 
-1. 先查 ip2region；若返回 `中国|...|省|市|ISP` 且省非空 → 用它（国内 ISP 粒度更好）。
-2. 否则（国际 IP 或 ip2region 无结果）→ 查 mmdb City + ASN。
-3. 合并填入 `country/province/city/isp/asn`。session 创建时同步富化（快，不阻塞）。
+1. 先查 ip2region，保留中国大陆省/市/ISP 粒度。
+2. 同时查 MaxMind Country/ASN 做国际和港澳台补充。
+3. 若 ip2region 返回“中国”但 MaxMind 返回 Taiwan/Hong Kong/Macau 等地区，优先采用 MaxMind 的 country/ASN，避免港澳台被粗粒度归为中国大陆。
+4. 合并填入 `country/province/city/isp/asn`。session 创建时同步富化。
 
 ### 更新
 
-ip2region 不定期更新（关注 repo release）；MaxMind/DB-IP 每周/月更新。建议 cron 每月拉取替换 + 重启服务（或热加载）。
+ip2region 不定期更新（关注 repo release）；MaxMind GeoLite2 每周/月更新。建议定期拉取替换 + 重启服务（或后续加热加载）。
 
 ### 交叉校验（Phase 2，可选）
 
@@ -487,20 +487,20 @@ cors 基线目标（ipinfo/ip.sb）返回的 geo 与本地 GeoIP 比对，不一
 
 | 层 | 选型 |
 |---|---|
-| 后端 | Go（gin 或 echo） |
+| 后端 | Go + Gin |
 | 数据库 | ClickHouse（ReplacingMergeTree，配置/session/事件统一） |
 | 限流/计数 | Redis |
 | 鉴权 | JWT / 静态 token（无状态，不落 DB） |
 | GeoIP | ip2region + MaxMind GeoLite2（或 DB-IP lite） |
-| 玩家页 | 旧 index.html 演进（配置驱动 + 编号 + 流式上报） |
-| 后台前端 | Vue 或 React（轻量后台） |
-| 部署 | 单 Go 二进制 + nginx（TLS/静态） |
+| 玩家页 | 单 HTML（配置驱动 + 编号 + 流式上报 + i18n） |
+| 后台前端 | 单 HTML（目标 CRUD + 记录查询/详情） |
+| 部署 | Docker / 单 Go 二进制 + nginx（TLS/静态） |
 
 ---
 
 ## 12. 项目骨架与部署
 
-> v0.1 已生成，`go build ./...` + `go vet ./...` 通过。
+> v1.0 已实现，`go test ./...` + `go vet ./...` 通过。
 
 ```
 Test Link/
@@ -516,26 +516,26 @@ Test Link/
 │   └── config.go                 # YAML 配置加载（带默认值）
 ├── internal/
 │   ├── model/model.go            # 共享类型（Session/Target/ProbeResult/API DTOs）
-│   ├── geoip/geoip.go            # ip2region 内存加载（v4/v6 自适应）
-│   ├── store/clickhouse.go       # ClickHouse 连接 + DDL + CRUD + 统计 + 种子数据
+│   ├── geoip/geoip.go            # ip2region + MaxMind 离线 GeoIP
+│   ├── store/clickhouse.go       # ClickHouse 连接 + DDL + CRUD + 种子数据
 │   ├── session/service.go        # Session 管理（编号签发/geo富化/UA解析/verdict更新）
 │   ├── target/service.go         # 目标配置 CRUD（追加版本、软删除）
 │   ├── probe/service.go          # 上报处理、config snapshot 校验、裁决触发
-│   ├── verdict/verdict.go        # 判定矩阵（5 种 verdict code）
+│   ├── verdict/verdict.go        # 判定矩阵（snapshot 完整性 + 延迟阈值）
 │   ├── ratelimit/ratelimit.go    # Redis 固定窗口限流（容错放通）
 │   ├── auth/auth.go              # JWT + 静态 token 双模式鉴权
 │   └── api/
 │       ├── handler.go            # HTTP handlers（玩家 2 个 + 后台 8 个）
 │       └── middleware.go         # 限流中间件 + admin 鉴权中间件
 ├── web/
-│   ├── player/index.html         # 玩家测试页（配置驱动、session编号、流式上报、结论）
-│   └── admin/index.html          # 管理后台（目标CRUD、按编号查询、多维搜索、统计看板）
+│   ├── player/index.html         # 玩家测试页（配置驱动、session编号、流式上报、结论、i18n）
+│   └── admin/index.html          # 管理后台（目标CRUD、按编号查询、多维搜索、详情）
 └── migrations/
     └── 001_init.sql              # ClickHouse DDL 参考（应用启动时自动执行）
 ```
 
 - 开发：`docker-compose up -d` 起 ClickHouse + Redis，`go run ./cmd/server/ config.yaml`。
-- 生产：Go 二进制 + nginx 反代，ClickHouse/Redis 用现有实例。
+- 生产：Docker 镜像 `whpan/testlink:latest` 或 Go 二进制 + nginx 反代，ClickHouse/Redis 用现有实例。
 - ClickHouse 表 DDL 在应用启动时自动执行（`store.Init`），也保留 `migrations/` 为参考。
 - GeoIP 库文件置项目根目录（`config.yaml` 中 `geoip.*` 路径指向），可 cron 更新后重启服务（或后续加热加载）。
 

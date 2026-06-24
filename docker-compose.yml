@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   clickhouse:
     image: clickhouse/clickhouse-server:latest
@@ -10,6 +9,7 @@ services:
       CLICKHOUSE_USER: testlink
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
       CLICKHOUSE_PASSWORD: "testlink123"
+      TZ: Asia/Shanghai
     volumes:
       - ./data/clickhouse:/var/lib/clickhouse
       - ./migrations:/docker-entrypoint-initdb.d

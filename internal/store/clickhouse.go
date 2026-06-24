@@ -50,8 +50,9 @@ func (ch *ClickHouse) Init(ctx context.Context) error {
 	// Ensure new columns exist on existing tables (safe no-op if already present)
 	for _, alt := range []string{
 		`ALTER TABLE tl_probe_result ADD COLUMN IF NOT EXISTS resp_headers String DEFAULT ''`,
-			`ALTER TABLE tl_probe_result ADD COLUMN IF NOT EXISTS resolved_geo Nullable(String)`,
+		`ALTER TABLE tl_probe_result ADD COLUMN IF NOT EXISTS resolved_geo Nullable(String)`,
 		`ALTER TABLE tl_probe_result ADD COLUMN IF NOT EXISTS resp_body String DEFAULT ''`,
+		`ALTER TABLE tl_target ADD COLUMN IF NOT EXISTS latency_warn_ms UInt32 DEFAULT 0`,
 	} {
 		if err := ch.conn.Exec(ctx, alt); err != nil {
 			log.Printf("alter table (non-fatal): %v", err)
@@ -77,17 +78,17 @@ func (ch *ClickHouse) Init(ctx context.Context) error {
 
 func (ch *ClickHouse) InsertTarget(ctx context.Context, t model.Target) error {
 	return ch.conn.Exec(ctx,
-		`INSERT INTO tl_target (id,name,group_name,role,url,method,mode,timeout_ms,repeat_count,cache_bust,extract_rule,player_visible,display_order,enabled,note,updated_at,version)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO tl_target (id,name,group_name,role,url,method,mode,timeout_ms,repeat_count,cache_bust,latency_warn_ms,extract_rule,player_visible,display_order,enabled,note,updated_at,version)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		t.ID, t.Name, t.GroupName, t.Role, t.URL, t.Method, t.Mode,
-		t.TimeoutMS, t.RepeatCount, t.CacheBust, t.ExtractRule,
+		t.TimeoutMS, t.RepeatCount, t.CacheBust, t.LatencyWarnMS, t.ExtractRule,
 		t.PlayerVisible, t.DisplayOrder, t.Enabled, t.Note, t.UpdatedAt, t.Version,
 	)
 }
 
 func (ch *ClickHouse) GetEnabledTargets(ctx context.Context) ([]model.Target, error) {
 	rows, err := ch.conn.Query(ctx,
-		`SELECT id,name,group_name,role,url,method,mode,timeout_ms,repeat_count,cache_bust,extract_rule,player_visible,display_order,enabled,note,updated_at,version
+		`SELECT id,name,group_name,role,url,method,mode,timeout_ms,repeat_count,cache_bust,latency_warn_ms,extract_rule,player_visible,display_order,enabled,note,updated_at,version
 		 FROM tl_target ORDER BY id, version DESC`)
 	if err != nil {
 		return nil, err
@@ -97,7 +98,7 @@ func (ch *ClickHouse) GetEnabledTargets(ctx context.Context) ([]model.Target, er
 	for rows.Next() {
 		var t model.Target
 		if err := rows.Scan(&t.ID, &t.Name, &t.GroupName, &t.Role, &t.URL, &t.Method, &t.Mode,
-			&t.TimeoutMS, &t.RepeatCount, &t.CacheBust, &t.ExtractRule,
+			&t.TimeoutMS, &t.RepeatCount, &t.CacheBust, &t.LatencyWarnMS, &t.ExtractRule,
 			&t.PlayerVisible, &t.DisplayOrder, &t.Enabled, &t.Note, &t.UpdatedAt, &t.Version); err != nil {
 			return nil, err
 		}
@@ -118,7 +119,7 @@ func (ch *ClickHouse) GetEnabledTargets(ctx context.Context) ([]model.Target, er
 func (ch *ClickHouse) GetAllTargets(ctx context.Context) ([]model.Target, error) {
 	// Order by id, version DESC so latest version appears first per id
 	rows, err := ch.conn.Query(ctx,
-		`SELECT id,name,group_name,role,url,method,mode,timeout_ms,repeat_count,cache_bust,extract_rule,player_visible,display_order,enabled,note,updated_at,version
+		`SELECT id,name,group_name,role,url,method,mode,timeout_ms,repeat_count,cache_bust,latency_warn_ms,extract_rule,player_visible,display_order,enabled,note,updated_at,version
 		 FROM tl_target ORDER BY id, version DESC`)
 	if err != nil {
 		return nil, err
@@ -129,7 +130,7 @@ func (ch *ClickHouse) GetAllTargets(ctx context.Context) ([]model.Target, error)
 	for rows.Next() {
 		var t model.Target
 		if err := rows.Scan(&t.ID, &t.Name, &t.GroupName, &t.Role, &t.URL, &t.Method, &t.Mode,
-			&t.TimeoutMS, &t.RepeatCount, &t.CacheBust, &t.ExtractRule,
+			&t.TimeoutMS, &t.RepeatCount, &t.CacheBust, &t.LatencyWarnMS, &t.ExtractRule,
 			&t.PlayerVisible, &t.DisplayOrder, &t.Enabled, &t.Note, &t.UpdatedAt, &t.Version); err != nil {
 			return nil, err
 		}
@@ -297,6 +298,7 @@ func (ch *ClickHouse) GetProbeResults(ctx context.Context, sessionID string) ([]
 
 	return results, nil
 }
+
 // ── Stats ──
 
 func (ch *ClickHouse) GetStats(ctx context.Context, since time.Time, groupBy string) (*StatsResult, error) {
@@ -360,6 +362,7 @@ CREATE TABLE IF NOT EXISTS tl_target (
     timeout_ms      UInt32 DEFAULT 5000,
     repeat_count    UInt8 DEFAULT 4,
     cache_bust      UInt8 DEFAULT 0,
+    latency_warn_ms UInt32 DEFAULT 0,
     extract_rule    String DEFAULT '',
     player_visible  UInt8 DEFAULT 1,
     display_order   UInt32 DEFAULT 0,

@@ -8,8 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - 后端 Go，单 ClickHouse 数据库，可选 Redis 限流
 - 玩家页配置驱动（后台 CRUD 目标），浏览器端 no-cors/cors 探测 + 流式上报
-- 判定矩阵用 baseline 对照组防误判（国内/国际基线 vs 我方业务）
-- GeoIP 离线富化：ip2region（国内省/市/ISP）+ MaxMind mmdb（国际，待集成）
+- 判定矩阵用基线对照组防误判（基线 vs 业务），并支持业务目标延迟阈值
+- GeoIP 离线富化：ip2region（国内省/市/ISP）+ MaxMind mmdb（港澳台/国际与 ASN）
 
 ## 常用命令
 
@@ -58,14 +58,14 @@ open http://localhost:8080/admin-page                  # 管理后台
 5. sendBeacon 兜底
 
 **判定矩阵（`internal/verdict/`）：**
-- 国内基线（如 baidu）任一 reachable → 国内网络正常
-- 国际基线（Google/CF/ipinfo/ip.sb）任一 reachable → 国际可达
-- 两者 OK + 业务全挂 → `OUR_API_DOWN`
-- 两者 OK + 业务部分挂 → `PARTIAL_FAIL`
-- 国内 OK + 国际不行 → `PLAYER_CROSSBORDER_BLOCKED`
-- 两者都挂 → `PLAYER_NET_DOWN`
+- 任一基线 reachable → 玩家网络基础可达
+- 基线全挂 → `PLAYER_NET_DOWN`
+- 基线通 + 业务全挂且业务目标均已完成上报 → `OUR_API_DOWN`
+- 基线通 + 业务部分挂，或业务 reachable 但超过 `latency_warn_ms` → `PARTIAL_FAIL`
+- 基线通 + 业务全通且未超过延迟阈值 → `ALL_OK`
+- snapshot 中目标未完成上报时，不做“全部不可达”误判；必要时返回 `INCONCLUSIVE`
 
-**目标配置（`tl_target`）：** 每个目标设 role（baseline/business）、mode（cors/no-cors）、group_name（模块分组）、extract_rule（cors 目标提取 IP/geo 的 JSONPath）。后台 CRUD 用 INSERT 新版本行（version+1）。
+**目标配置（`tl_target`）：** 每个目标设 role（中文 `基线`/`业务`，兼容旧 baseline/business）、mode（cors/no-cors）、group_name（仅 UI 分组）、latency_warn_ms（延迟阈值，0=不检查）、extract_rule（cors 目标提取 IP/geo 的 JSONPath）。后台 CRUD 用 INSERT 新版本行（version+1）。
 
 ## 关键文件
 
@@ -74,17 +74,17 @@ open http://localhost:8080/admin-page                  # 管理后台
 | `cmd/server/main.go` | 入口，gin 路由注册、优雅关停 |
 | `cmd/server/config.go` | YAML 配置加载与默认值 |
 | `internal/geoip/geoip.go` | ip2region xdb 内存加载，`Search(ip)` 返回国家\|省\|市\|ISP |
-| `internal/store/clickhouse.go` | ClickHouse 连接、DDL、全部 CRUD、种子数据（7 条默认目标） |
+| `internal/store/clickhouse.go` | ClickHouse 连接、DDL、全部 CRUD、种子数据（8 条默认目标） |
 | `internal/session/service.go` | Session 编号签发（base32）、UA 解析、verdict/note 追加更新 |
 | `internal/target/service.go` | 目标配置 CRUD（追加版本、软删除 disabled=0） |
 | `internal/probe/service.go` | 上报处理、snapshot 校验、触发 verdict |
 | `internal/verdict/verdict.go` | 5 种 verdict code 判定逻辑 |
 | `internal/auth/auth.go` | JWT + 静态 admin token 双模式 |
 | `internal/ratelimit/ratelimit.go` | Redis INCR + EXPIRE 固定窗口，Redis 挂掉容错放通 |
-| `internal/api/handler.go` | HTTP handlers（玩家侧 session/report、后台 CRUD/查询/统计） |
+| `internal/api/handler.go` | HTTP handlers（玩家侧 session/report、后台 CRUD/查询） |
 | `internal/api/middleware.go` | 限流中间件（RateLimitSession/Report）、admin JWT 鉴权中间件 |
 | `web/player/index.html` | 玩家拨测页（配置驱动、session 编号大字、流式上报、verdict 条） |
-| `web/admin/index.html` | 后台 SPA（目标 CRUD、按编号查询、多维搜索、统计看板） |
+| `web/admin/index.html` | 后台 SPA（目标 CRUD、按编号查询、多维搜索、记录详情） |
 | `migrations/001_init.sql` | DDL 参考（应用启动时 `store.Init` 自动执行） |
 
 ## 配置要点
@@ -94,11 +94,13 @@ open http://localhost:8080/admin-page                  # 管理后台
 - `geoip.ip2region_v4/v6` — xdb 文件路径（当前放项目根目录）
 - `auth.admin_token` — 后台登录凭证（内部工具，简单 token）
 - `auth.jwt_secret` — JWT 签名密钥
+- `server.trusted_proxy_cidrs` — 生产反代/负载均衡 CIDR；配置后优先于旧的 `trusted_proxies`
 - `ratelimit.session_per_ip_per_min` — 默认 5
+- Docker 部署可用 `TESTLINK_*` 环境变量覆盖 ClickHouse/Redis/Auth/Port/Trusted proxy 配置
 
 ## GeoIP 集成
 
-ip2region 已可用（国内省/市/ISP）。MaxMind mmdb（`GeoLite2-Country.mmdb` + `GeoLite2-ASN.mmdb`）已下载但 Go 端未集成——`internal/geoip/geoip.go` 仅查 ip2region。国际 IP 当前返回 country="未知"。后续集成需引入 mmdb 读取库（pkg.go.dev 搜 `maxminddb`），在 `Lookup()` 中 ip2region 无结果时回退查 mmdb。
+ip2region 已可用（中国大陆省/市/ISP），MaxMind mmdb（`GeoLite2-Country.mmdb` + `GeoLite2-ASN.mmdb`）已集成用于港澳台/国际国家与 ASN，并会交叉校验 ip2region：当 ip2region 将港澳台识别为“中国”但 MaxMind 给出 Taiwan/Hong Kong/Macau 等国家/地区时，优先采用 MaxMind 的国家/地区与 ASN。
 
 ## ClickHouse ReplacingMergeTree 注意事项
 

@@ -23,6 +23,33 @@ import (
 	"testlink/internal/target"
 )
 
+func connectClickHouseWithRetry(cfg *Config, timeout time.Duration) (*store.ClickHouse, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		ch, err := store.New(cfg.ClickHouse.Host, cfg.ClickHouse.Port, cfg.ClickHouse.Database, cfg.ClickHouse.Username, cfg.ClickHouse.Password)
+		if err == nil {
+			return ch, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return nil, lastErr
+		}
+		log.Printf("clickhouse not ready, retrying: %v", err)
+		time.Sleep(2 * time.Second)
+	}
+}
+
+func warnWeakAuth(cfg *Config) {
+	if cfg.Auth.AdminToken == "" || cfg.Auth.JWTSecret == "" {
+		log.Println("WARN auth.admin_token or auth.jwt_secret is empty; set strong values before production use")
+		return
+	}
+	if cfg.Auth.AdminToken == "testlink123!" || cfg.Auth.JWTSecret == "testlink123!" {
+		log.Println("WARN default auth token/secret is in use; change TESTLINK_ADMIN_TOKEN and TESTLINK_JWT_SECRET for production")
+	}
+}
+
 func main() {
 	cfgPath := "config.yaml"
 	if len(os.Args) > 1 {
@@ -42,8 +69,10 @@ func main() {
 	defer geo.Close()
 	log.Println("geoip loaded")
 
+	warnWeakAuth(cfg)
+
 	// ClickHouse
-	ch, err := store.New(cfg.ClickHouse.Host, cfg.ClickHouse.Port, cfg.ClickHouse.Database, cfg.ClickHouse.Username, cfg.ClickHouse.Password)
+	ch, err := connectClickHouseWithRetry(cfg, 30*time.Second)
 	if err != nil {
 		log.Fatalf("clickhouse: %v", err)
 	}
@@ -64,8 +93,9 @@ func main() {
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		log.Printf("redis unavailable (rate limiting disabled): %v", err)
 		// Continue without Redis — rate limiting will be skipped
+	} else {
+		log.Println("redis ready")
 	}
-	log.Println("redis ready")
 
 	// Services
 	authSvc := auth.New(cfg.Auth.JWTSecret, cfg.Auth.AdminToken)
@@ -80,13 +110,18 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
-	// Trust X-Forwarded-For headers for client IP
-	proxies := make([]string, cfg.Server.TrustedProxies)
-	for i := range proxies {
-		proxies[i] = "0.0.0.0/0"
+	// Trust X-Forwarded-For headers for client IP.
+	proxies := cfg.Server.TrustedProxyCIDRs
+	if len(proxies) == 0 && cfg.Server.TrustedProxies > 0 {
+		proxies = make([]string, cfg.Server.TrustedProxies)
+		for i := range proxies {
+			proxies[i] = "0.0.0.0/0"
+		}
 	}
 	if len(proxies) > 0 {
-		r.SetTrustedProxies(proxies)
+		if err := r.SetTrustedProxies(proxies); err != nil {
+			log.Fatalf("set trusted proxies: %v", err)
+		}
 	}
 
 	// Player routes (public)
@@ -96,7 +131,9 @@ func main() {
 	// Admin routes
 	admin := r.Group("/admin")
 	admin.POST("/login", func(c *gin.Context) {
-		var req struct{ Token string `json:"token"` }
+		var req struct {
+			Token string `json:"token"`
+		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 			return

@@ -94,7 +94,7 @@ func (s *Service) HandleReport(ctx context.Context, req model.ReportRequest, fin
 		if err != nil {
 			return nil, fmt.Errorf("get probe results: %w", err)
 		}
-		code, detail := verdict.Compute(allResults)
+		code, detail := verdict.Compute(allResults, targets)
 		resp.Verdict = code
 		resp.VerdictDetail = detail
 		if err := s.sess.UpdateVerdict(ctx, req.SessionID, code, detail); err != nil {

@@ -15,6 +15,7 @@ type Target struct {
 	TimeoutMS     uint32    `json:"timeout_ms"`
 	RepeatCount   uint8     `json:"repeat_count"`
 	CacheBust     uint8     `json:"cache_bust"`
+	LatencyWarnMS uint32    `json:"latency_warn_ms"` // 延迟告警阈值(ms)，0=不检查
 	ExtractRule   string    `json:"extract_rule,omitempty"`
 	PlayerVisible uint8     `json:"player_visible"`
 	DisplayOrder  uint32    `json:"display_order"`

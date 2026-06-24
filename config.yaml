@@ -1,16 +1,19 @@
 server:
   port: 8080
   trusted_proxies: 1
+  # 生产环境建议填反代/负载均衡的真实 CIDR，例如 ["127.0.0.1", "10.0.0.0/8"]。
+  # 填了此项会优先于 trusted_proxies，避免无条件信任所有 X-Forwarded-For。
+  trusted_proxy_cidrs: []
 
 clickhouse:
-  host: 192.168.5.119
+  host: localhost
   port: 9000
   database: testlink
   username: testlink
   password: "testlink123"
 
 redis:
-  host: 192.168.5.119
+  host: localhost
   port: 6379
   password: ""
 
